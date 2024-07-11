@@ -747,6 +747,16 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 				} else {
 					sort.Slice(np.Replicas, func(i, j int) bool { return np.Replicas[i] < np.Replicas[j] })
 				}
+				// swap leader into the first position
+				if led != nil {
+					for i := range np.Replicas {
+						if i > 0 && np.Replicas[i] == led.ID() {
+							np.Replicas[i] = np.Replicas[0]
+							np.Replicas[0] = led.ID()
+							break
+						}
+					}
+				}
 			}
 
 			if requestedFields.partitionISRs {
@@ -754,6 +764,16 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 					output.Warnf("unable to read inSyncReplicas for topic %s partition %d", name, partitionId)
 				} else {
 					sort.Slice(np.ISRs, func(i, j int) bool { return np.ISRs[i] < np.ISRs[j] })
+				}
+				// swap leader into the first position
+				if led != nil {
+					for i := range np.ISRs {
+						if i > 0 && np.ISRs[i] == led.ID() {
+							np.ISRs[i] = np.ISRs[0]
+							np.ISRs[0] = led.ID()
+							break
+						}
+					}
 				}
 			}
 
