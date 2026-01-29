@@ -42,11 +42,13 @@ type requestedTopicFields struct {
 	partitionReplicas bool
 	partitionISRs     bool
 	config            PrintConfigsParam
+	leaderFirst       bool
 }
 
 var allFields = requestedTopicFields{
 	partitionID: true, partitionOffset: true, partitionLeader: true,
 	partitionReplicas: true, partitionISRs: true, config: NonDefaultConfigs,
+	leaderFirst: true,
 }
 
 type GetTopicsFlags struct {
@@ -85,6 +87,7 @@ type DescribeTopicFlags struct {
 	AllConfigs          bool
 	SkipEmptyPartitions bool
 	OutputFormat        string
+	LeaderFirst         bool
 }
 
 type Operation struct {
@@ -232,6 +235,8 @@ func (operation *Operation) DescribeTopic(topic string, flags DescribeTopicFlags
 	} else {
 		fields.config = NonDefaultConfigs
 	}
+
+	fields.leaderFirst = flags.LeaderFirst
 
 	if t, err = readTopic(&client, &admin, topic, fields); err != nil {
 		return errors.Wrap(err, "failed to read topic")
@@ -808,7 +813,7 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 					sort.Slice(np.Replicas, func(i, j int) bool { return np.Replicas[i] < np.Replicas[j] })
 				}
 				// swap leader into the first position
-				if led != nil {
+				if requestedFields.leaderFirst && led != nil {
 					for i := range np.Replicas {
 						if i > 0 && np.Replicas[i] == led.ID() {
 							np.Replicas[i] = np.Replicas[0]
@@ -826,7 +831,7 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 					sort.Slice(np.ISRs, func(i, j int) bool { return np.ISRs[i] < np.ISRs[j] })
 				}
 				// swap leader into the first position
-				if led != nil {
+				if requestedFields.leaderFirst && led != nil {
 					for i := range np.ISRs {
 						if i > 0 && np.ISRs[i] == led.ID() {
 							np.ISRs[i] = np.ISRs[0]

@@ -27,6 +27,7 @@ func newDescribeTopicCmd() *cobra.Command {
 	cmdDescribeTopic.Flags().StringVarP(&flags.OutputFormat, "output", "o", flags.OutputFormat, "output format. One of: json|yaml|wide")
 	cmdDescribeTopic.Flags().BoolVarP(&flags.AllConfigs, "all-configs", "a", false, "print all configs including defaults")
 	cmdDescribeTopic.Flags().BoolVarP(&flags.SkipEmptyPartitions, "skip-empty", "s", false, "show only partitions that have a messages")
+	cmdDescribeTopic.Flags().BoolVarP(&flags.LeaderFirst, "leader-first", "l", true, "sort leader to first position in replicas and ISRs lists")
 
 	return cmdDescribeTopic
 }
