@@ -8,13 +8,16 @@ import (
 	"strings"
 	"syscall"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"github.com/IBM/sarama"
+	"github.com/pkg/errors"
+	"go.uber.org/ratelimit"
+
 	"github.com/deviceinsight/kafkactl/v5/internal"
 	"github.com/deviceinsight/kafkactl/v5/internal/output"
 	"github.com/deviceinsight/kafkactl/v5/internal/producer/input"
 	"github.com/deviceinsight/kafkactl/v5/internal/util"
-	"github.com/pkg/errors"
-	"go.uber.org/ratelimit"
 )
 
 type Flags struct {
@@ -45,11 +48,9 @@ type Flags struct {
 
 const DefaultMaxMessagesBytes = 1000000
 
-type Operation struct {
-}
+type Operation struct{}
 
 func (operation *Operation) Produce(topic string, flags Flags) error {
-
 	var (
 		clientContext internal.ClientContext
 		err           error
@@ -79,22 +80,24 @@ func (operation *Operation) Produce(topic string, flags Flags) error {
 
 	serializers := MessageSerializerChain{topic: topic}
 
-	if clientContext.AvroSchemaRegistry != "" {
-		serializer, err := CreateAvroMessageSerializer(topic, clientContext.AvroSchemaRegistry, clientContext.AvroJSONCodec)
+	if clientContext.SchemaRegistry.URL != "" {
+		client, err := internal.CreateCachingSchemaRegistry(&clientContext)
 		if err != nil {
 			return err
 		}
+		avroSerializer := AvroMessageSerializer{topic: topic, client: client, jsonCodec: clientContext.Avro.JSONCodec}
+		protobufSerializer := RegistryProtobufMessageSerializer{topic: topic, client: client}
 
-		serializers.serializers = append(serializers.serializers, serializer)
+		serializers.serializers = append(serializers.serializers, avroSerializer, protobufSerializer)
 	}
+	context := clientContext.Protobuf
+	context.ProtosetFiles = append(flags.ProtosetFiles, context.ProtosetFiles...)
+	context.ProtoFiles = append(flags.ProtoFiles, context.ProtoFiles...)
+	context.ProtoImportPaths = append(flags.ProtoImportPaths, context.ProtoImportPaths...)
 
-	if flags.KeyProtoType != "" || flags.ValueProtoType != "" {
-		context := clientContext.Protobuf
-		context.ProtosetFiles = append(flags.ProtosetFiles, context.ProtosetFiles...)
-		context.ProtoFiles = append(flags.ProtoFiles, context.ProtoFiles...)
-		context.ProtoImportPaths = append(flags.ProtoImportPaths, context.ProtoImportPaths...)
+	if len(context.ProtoFiles) != 0 || len(context.ProtoImportPaths) != 0 || len(context.ProtosetFiles) != 0 {
 
-		serializer, err := CreateProtobufMessageSerializer(topic, context, flags.KeyProtoType, flags.ValueProtoType)
+		serializer, err := CreateProtobufMessageSerializer(topic, context, protoreflect.FullName(flags.KeyProtoType), protoreflect.FullName(flags.ValueProtoType))
 		if err != nil {
 			return err
 		}
@@ -111,7 +114,7 @@ func (operation *Operation) Produce(topic string, flags Flags) error {
 	}
 	defer func() {
 		if err := producer.Close(); err != nil {
-			output.Warnf("Failed to close Kafka producer cleanly:", err)
+			output.Warnf("Failed to close Kafka producer cleanly: %v", err)
 		}
 	}()
 
@@ -130,9 +133,9 @@ func (operation *Operation) Produce(topic string, flags Flags) error {
 		var message *sarama.ProducerMessage
 
 		if flags.NullValue {
-			message, err = serializers.Serialize([]byte(flags.Key), nil, flags)
+			message, err = serializers.Serialize(input.Message{Key: &flags.Key}, flags)
 		} else {
-			message, err = serializers.Serialize([]byte(flags.Key), []byte(flags.Value), flags)
+			message, err = serializers.Serialize(input.Message{Key: &flags.Key, Value: &flags.Value}, flags)
 		}
 
 		if err != nil {
@@ -212,11 +215,11 @@ func (operation *Operation) Produce(topic string, flags Flags) error {
 			}
 
 			if inputMessage, err = inputParser.ParseLine(line); err != nil {
-				return failWithMessageCount(messageCount, err.Error())
+				return failWithMessageCount(messageCount, "failed to parse line: %v", err.Error()) //nolint:govet
 			}
 
 			messageCount++
-			message, err := serializers.Serialize([]byte(inputMessage.Key), []byte(inputMessage.Value), flags)
+			message, err := serializers.Serialize(inputMessage, flags)
 			if err != nil {
 				return errors.Wrap(err, "Failed to produce message")
 			}
@@ -243,7 +246,6 @@ func (operation *Operation) Produce(topic string, flags Flags) error {
 }
 
 func applyProducerConfigs(config *sarama.Config, clientContext internal.ClientContext, flags Flags) error {
-
 	var err error
 
 	partitioner := clientContext.Producer.Partitioner
@@ -326,9 +328,7 @@ func stdinAvailable() bool {
 }
 
 func splitAt(delimiter string) func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-
 	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-
 		// Return nothing if at end of file and no data passed
 		if atEOF && len(data) == 0 {
 			return 0, nil, nil

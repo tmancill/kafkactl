@@ -2,9 +2,14 @@ package consume
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/deviceinsight/kafkactl/v5/internal/helpers/protobuf"
 
 	"github.com/deviceinsight/kafkactl/v5/internal/helpers"
 
@@ -17,30 +22,36 @@ import (
 )
 
 type Flags struct {
-	PrintPartitions  bool
-	PrintKeys        bool
-	PrintTimestamps  bool
-	PrintAvroSchema  bool
-	PrintHeaders     bool
-	OutputFormat     string
-	Separator        string
-	Group            string
-	Partitions       []int
-	Offsets          []string
-	FromBeginning    bool
-	FromTimestamp    string
-	ToTimestamp      string
-	Tail             int
-	Exit             bool
-	MaxMessages      int64
-	EncodeValue      string
-	EncodeKey        string
-	ProtoFiles       []string
-	ProtoImportPaths []string
-	ProtosetFiles    []string
-	KeyProtoType     string
-	ValueProtoType   string
-	IsolationLevel   string
+	PrintPartitions     bool
+	PrintKeys           bool
+	PrintTimestamps     bool
+	PrintSchema         bool
+	PrintHeaders        bool
+	PrintAll            bool
+	OutputFormat        string
+	Separator           string
+	Group               string
+	Partitions          []int
+	Offsets             []string
+	FromBeginning       bool
+	FromTimestamp       string
+	ToTimestamp         string
+	Tail                int
+	Exit                bool
+	MaxMessages         int64
+	EncodeValue         string
+	EncodeKey           string
+	ProtoFiles          []string
+	ProtoImportPaths    []string
+	ProtosetFiles       []string
+	ProtoMarshalOptions []string
+	KeyProtoType        string
+	ValueProtoType      string
+	IsolationLevel      string
+
+	FilterKey    string
+	FilterValue  string
+	FilterHeader map[string]string
 }
 
 type ConsumedMessage struct {
@@ -51,11 +62,9 @@ type ConsumedMessage struct {
 	Timestamp *time.Time
 }
 
-type Operation struct {
-}
+type Operation struct{}
 
 func (operation *Operation) Consume(topic string, flags Flags) error {
-
 	var (
 		clientContext internal.ClientContext
 		err           error
@@ -88,32 +97,35 @@ func (operation *Operation) Consume(topic string, flags Flags) error {
 		return errors.Errorf("topic '%s' does not exist", topic)
 	}
 
+	var schemaRegistryClient *internal.CachingSchemaRegistry
+
+	if clientContext.SchemaRegistry.URL != "" {
+		schemaRegistryClient, err = internal.CreateCachingSchemaRegistry(&clientContext)
+		if err != nil {
+			return err
+		}
+	}
+
 	var deserializers MessageDeserializerChain
+	var protobufConfig internal.ProtobufConfig
 
-	if clientContext.AvroSchemaRegistry != "" {
-		deserializer, err := CreateAvroMessageDeserializer(topic, clientContext.AvroSchemaRegistry, clientContext.AvroJSONCodec)
-		if err != nil {
-			return err
-		}
-
-		deserializers = append(deserializers, deserializer)
+	if protobufConfig, err = addFlagsToProtobufConfig(clientContext.Protobuf, flags); err != nil {
+		return err
 	}
 
-	if flags.ValueProtoType != "" {
-		searchCtx := clientContext.Protobuf
-		searchCtx.ProtosetFiles = append(flags.ProtosetFiles, searchCtx.ProtosetFiles...)
-		searchCtx.ProtoFiles = append(flags.ProtoFiles, searchCtx.ProtoFiles...)
-		searchCtx.ProtoImportPaths = append(flags.ProtoImportPaths, searchCtx.ProtoImportPaths...)
-
-		deserializer, err := CreateProtobufMessageDeserializer(searchCtx, flags.KeyProtoType, flags.ValueProtoType)
-		if err != nil {
-			return err
-		}
-
-		deserializers = append(deserializers, deserializer)
+	if schemaRegistryClient != nil {
+		avroDeserializer := AvroMessageDeserializer{topic: topic, registry: schemaRegistryClient, jsonCodec: clientContext.Avro.JSONCodec}
+		protobufDeserializer := RegistryProtobufMessageDeserializer{config: protobufConfig, registry: schemaRegistryClient}
+		deserializers = append(deserializers, &avroDeserializer, &protobufDeserializer)
 	}
 
-	deserializers = append(deserializers, DefaultMessageDeserializer{})
+	deserializer, err := CreateProtobufMessageDeserializer(protobufConfig, protoreflect.FullName(flags.KeyProtoType), protoreflect.FullName(flags.ValueProtoType))
+	if err != nil {
+		return err
+	}
+
+	deserializers = append(deserializers, deserializer)
+	deserializers = append(deserializers, &DefaultMessageDeserializer{})
 
 	if flags.Group != "" {
 		if flags.Exit {
@@ -156,7 +168,12 @@ func (operation *Operation) Consume(topic string, flags Flags) error {
 		return errors.Wrap(err, "Failed to start consumer")
 	}
 
-	deserializationGroup := deserializeMessages(ctx, flags, messages, stopConsumers, deserializers)
+	messageFilter, err := NewMessageFilter(flags.FilterKey, flags.FilterValue, flags.FilterHeader)
+	if err != nil {
+		return err
+	}
+
+	deserializationGroup := deserializeMessages(ctx, flags, messages, stopConsumers, deserializers, messageFilter)
 
 	if err := consumer.Wait(); err != nil {
 		return errors.Wrap(err, "Failed while waiting for consumer")
@@ -177,8 +194,23 @@ func (operation *Operation) Consume(topic string, flags Flags) error {
 	return nil
 }
 
-func applyConsumerConfigs(config *sarama.Config, clientContext internal.ClientContext, flags Flags) error {
+func addFlagsToProtobufConfig(protobufConfig internal.ProtobufConfig, flags Flags) (internal.ProtobufConfig, error) {
 
+	protobufConfig.ProtosetFiles = append(flags.ProtosetFiles, protobufConfig.ProtosetFiles...)
+	protobufConfig.ProtoFiles = append(flags.ProtoFiles, protobufConfig.ProtoFiles...)
+	protobufConfig.ProtoImportPaths = append(flags.ProtoImportPaths, protobufConfig.ProtoImportPaths...)
+
+	var err error
+
+	protobufConfig.MarshalOptions, err = protobuf.ParseMarshalOptions(flags.ProtoMarshalOptions, protobufConfig.MarshalOptions)
+	if err != nil {
+		return protobufConfig, fmt.Errorf("error parsing protobuf marshal options: %w", err)
+	}
+
+	return protobufConfig, nil
+}
+
+func applyConsumerConfigs(config *sarama.Config, clientContext internal.ClientContext, flags Flags) error {
 	var err error
 
 	isolationLevel := clientContext.Consumer.IsolationLevel
@@ -208,12 +240,12 @@ func parseIsolationLevel(isolationLevel string) (sarama.IsolationLevel, error) {
 	}
 }
 
-func deserializeMessages(ctx context.Context, flags Flags, messages <-chan *sarama.ConsumerMessage, stopConsumers chan<- bool, deserializers MessageDeserializerChain) *errgroup.Group {
-
+func deserializeMessages(ctx context.Context, flags Flags, messages <-chan *sarama.ConsumerMessage,
+	stopConsumers chan<- bool, deserializers MessageDeserializerChain, filter *MessageFilter,
+) *errgroup.Group {
 	errorGroup, _ := errgroup.WithContext(ctx)
 
 	if flags.Tail > 0 {
-
 		errorGroup.Go(func() error {
 			sortedMessages := make([]*sarama.ConsumerMessage, 0)
 
@@ -225,7 +257,7 @@ func deserializeMessages(ctx context.Context, flags Flags, messages <-chan *sara
 			}
 			lastIndex := len(sortedMessages) - 1
 			for i := range sortedMessages {
-				err := deserializers.Deserialize(sortedMessages[lastIndex-i], flags)
+				err := deserializers.Deserialize(sortedMessages[lastIndex-i], flags, filter)
 				if err != nil {
 					return err
 				}
@@ -233,15 +265,14 @@ func deserializeMessages(ctx context.Context, flags Flags, messages <-chan *sara
 
 			return nil
 		})
-
 	} else {
-		//just print the messages
+		// just print the messages
 		errorGroup.Go(func() error {
 			var messageCount int64
 			var err error
 
 			for msg := range messages {
-				err = deserializers.Deserialize(msg, flags)
+				err = deserializers.Deserialize(msg, flags, filter)
 				messageCount++
 				if err != nil {
 					close(stopConsumers)

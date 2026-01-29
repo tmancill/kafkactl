@@ -1,7 +1,10 @@
 package topic
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,9 +20,10 @@ import (
 )
 
 type Topic struct {
-	Name       string
-	Partitions []Partition       `json:",omitempty" yaml:",omitempty"`
-	Configs    []internal.Config `json:",omitempty" yaml:",omitempty"`
+	Name              string
+	ReplicationFactor int               `json:"replicationFactor" yaml:"replicationFactor"`
+	Partitions        []Partition       `json:",omitempty" yaml:",omitempty"`
+	Configs           []internal.Config `json:",omitempty" yaml:",omitempty"`
 }
 
 type Partition struct {
@@ -53,6 +57,7 @@ type CreateTopicFlags struct {
 	Partitions        int32
 	ReplicationFactor int16
 	ValidateOnly      bool
+	File              string
 	Configs           []string
 }
 
@@ -77,6 +82,7 @@ const (
 
 type DescribeTopicFlags struct {
 	PrintConfigs        PrintConfigsParam
+	AllConfigs          bool
 	SkipEmptyPartitions bool
 	OutputFormat        string
 }
@@ -109,6 +115,49 @@ func (operation *Operation) CreateTopics(topics []string, flags CreateTopicFlags
 	for _, config := range flags.Configs {
 		configParts := strings.Split(config, "=")
 		topicDetails.ConfigEntries[configParts[0]] = &configParts[1]
+	}
+
+	if flags.File != "" {
+		fileContent, err := os.ReadFile(flags.File)
+		if err != nil {
+			return errors.Wrap(err, "could not read topic description file")
+		}
+
+		fileTopicConfig := Topic{}
+		ext := path.Ext(flags.File)
+		var unmarshalErr error
+		switch ext {
+		case ".yml", ".yaml":
+			unmarshalErr = yaml.Unmarshal(fileContent, &fileTopicConfig)
+		case ".json":
+			unmarshalErr = json.Unmarshal(fileContent, &fileTopicConfig)
+		default:
+			return errors.Wrapf(err, "unsupported file format '%s'", ext)
+		}
+		if unmarshalErr != nil {
+			return errors.Wrap(err, "could not unmarshal config file")
+		}
+
+		numPartitions := int32(len(fileTopicConfig.Partitions))
+		if flags.Partitions == 1 {
+			topicDetails.NumPartitions = numPartitions
+		}
+
+		replicationFactors := map[int16]struct{}{}
+		for _, partition := range fileTopicConfig.Partitions {
+			replicationFactors[int16(len(partition.Replicas))] = struct{}{}
+		}
+		if flags.ReplicationFactor == -1 && len(replicationFactors) == 1 {
+			topicDetails.ReplicationFactor = int16(len(fileTopicConfig.Partitions[0].Replicas))
+		} else if flags.ReplicationFactor == -1 && len(replicationFactors) != 1 {
+			output.Warnf("replication factor from file ignored. partitions have different replicaCounts.")
+		}
+
+		for _, v := range fileTopicConfig.Configs {
+			if _, ok := topicDetails.ConfigEntries[v.Name]; !ok {
+				topicDetails.ConfigEntries[v.Name] = &v.Value
+			}
+		}
 	}
 
 	for _, topic := range topics {
@@ -177,7 +226,12 @@ func (operation *Operation) DescribeTopic(topic string, flags DescribeTopicFlags
 	}
 
 	fields := allFields
-	fields.config = flags.PrintConfigs
+
+	if flags.AllConfigs {
+		fields.config = AllConfigs
+	} else {
+		fields.config = NonDefaultConfigs
+	}
 
 	if t, err = readTopic(&client, &admin, topic, fields); err != nil {
 		return errors.Wrap(err, "failed to read topic")
@@ -190,6 +244,12 @@ func (operation *Operation) printTopic(topic Topic, flags DescribeTopicFlags) er
 
 	if flags.PrintConfigs == NoConfigs {
 		topic.Configs = nil
+	}
+
+	if len(topic.Configs) != 0 {
+		sort.Slice(topic.Configs, func(i, j int) bool {
+			return topic.Configs[i].Name < topic.Configs[j].Name
+		})
 	}
 
 	if len(topic.Configs) != 0 && flags.OutputFormat != "json" && flags.OutputFormat != "yaml" {
@@ -647,7 +707,7 @@ func (operation *Operation) GetTopics(flags GetTopicsFlags) error {
 		return output.PrintObject(topicList, flags.OutputFormat)
 	} else if flags.OutputFormat == "wide" {
 		for _, t := range topicList {
-			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(replicationFactor(t)), getConfigString(t.Configs)); err != nil {
+			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(t.ReplicationFactor), getConfigString(t.Configs)); err != nil {
 				return err
 			}
 		}
@@ -659,7 +719,7 @@ func (operation *Operation) GetTopics(flags GetTopicsFlags) error {
 		}
 	} else {
 		for _, t := range topicList {
-			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(replicationFactor(t))); err != nil {
+			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(t.ReplicationFactor)); err != nil {
 				return err
 			}
 		}
@@ -801,6 +861,8 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 			return top, err
 		}
 	}
+
+	top.ReplicationFactor = replicationFactor(top)
 
 	return top, nil
 }

@@ -6,25 +6,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## 5.0.6 - 2024-03-14
+### Changed
+- Update to Go 1.24.12
+
+## 5.17.0 - 2026-01-07
+- [#309](https://github.com/deviceinsight/kafkactl/issues/309) Allow executing a script to retrieve a OAuth token.
+
+- new flags `--filter-key`, `--filter-value` and `--filter-header` for filtering key/value/headers of messages
+
+## 5.16.0 - 2025-12-03
+- [#306](https://github.com/deviceinsight/kafkactl/pull/306) Support building arm image by updating to goreleaser v2
+- new flag `--print-all` for consume command which combines the other print parameters into one
+- decoding of AMQP-encoded header values
+
+## 5.15.0 - 2025-11-13
+
+## 5.14.0 - 2025-10-21
+
+### Added
+- [#304](https://github.com/deviceinsight/kafkactl/pull/304) Add support for headers when using file input to produce
+- [#300](https://github.com/deviceinsight/kafkactl/issues/300) Allow mounting secrets with certificates to kafkactl pod
+- [#253](https://github.com/deviceinsight/kafkactl/issues/253) Allow configuring k8s resource requests/limits
+
+## 5.13.0 - 2025-09-22
+
+### Added
+- [#297](https://github.com/deviceinsight/kafkactl/pull/297) Support configuring SASL version
+
+## 5.12.1 - 2025-08-27
+
+### Fixed
+- [#295](https://github.com/deviceinsight/kafkactl/issues/295) make sure we match the FullName first before using shortname
+
+## 5.12.0 - 2025-08-26
+
+### Added
+- **Alter Broker Command**: New `kafkactl alter broker` command for dynamic broker configuration management without requiring broker restarts
+- Only warn when config file or context file cannot be created (#282)
+- **SCRAM User Management**: Complete SCRAM credential management with `kafkactl create user`, `kafkactl alter user`, `kafkactl delete user`, `kafkactl get users`, and `kafkactl describe user` commands supporting SCRAM-SHA-256 and SCRAM-SHA-512 mechanisms
+- `describe broker` now allows to print also default broker configs
+
+## 5.11.1 - 2025-07-28
+
+## 5.11.0 - 2025-07-16
+
+### Added
+- [#276](https://github.com/deviceinsight/kafkactl/issues/276) More granular control when listing/deleting acls
+
+### Fixed
+- Do not commit offset for messages over the max-messages
+
+## 5.10.1 - 2025-07-02
+
+### Fixed
+- gracefully shutdown Kubernetes pod on exit
+- make plugin search path configurable via `KAFKA_CTL_PLUGIN_PATHS` environment variable
+
+## 5.10.0 - 2025-06-24
+
+### Added
+- Current context is now stored in a separate file to avoid write operations on the config file.
+- run kubectl commands as user other.
+
+### Changed
+- Update to Go 1.24.4
+
+### Fixed
+- Fixed panic() when configuring a nil map as tokenProvider.options
+
+## 5.9.0 - 2025-06-16
+### Fixed
+- [#255](https://github.com/deviceinsight/kafkactl/pull/255) Set resource name when creating a cluster ACL
+
+### Fixed
+- SASL token provider plugin options are now working in kubernetes mode.
+
+## 5.8.0 - 2025-05-16
+
+## 5.7.0 - 2025-04-02
+
+### Added
+- [#232](https://github.com/deviceinsight/kafkactl/pull/232) Protobufs serialization and deserialization now supports schemaRegistry
+
+## Changed
+- Update to Go 1.24
+
+## 5.6.0 - 2025-03-11
+
+### Changed
+- [#240](https://github.com/deviceinsight/kafkactl/pull/240) deserialization has been changed to generalize the usage
+  of the schemaRegistry. Note that the configuration of the schemaRegistry changed with this.
+
+## 5.5.1 - 2025-03-05
+
+### Fixed
+- [#237](https://github.com/deviceinsight/kafkactl/issues/237) Fix handling of relative paths.
+
+## 5.5.0 - 2025-02-11
+### Added
+- [#234](https://github.com/deviceinsight/kafkactl/pull/234) caching to arvo client when producing messages
+- [#236](https://github.com/deviceinsight/kafkactl/issues/236) set working directory to path with first loaded config file.
+- [#233](https://github.com/deviceinsight/kafkactl/issues/233) replication factor is now printed for most topic output formats.
+
+### Removed
+- [#231](https://github.com/deviceinsight/kafkactl/issues/231) Remove support for installing kafkactl via snap.
+
+### Fixed
+- [#227](https://github.com/deviceinsight/kafkactl/issues/227) Incorrect handling of Base64-encoded values when producing from JSON
+- [#228](https://github.com/deviceinsight/kafkactl/issues/228) Fix parsing version of gcloud kubectl.
+- [#217](https://github.com/deviceinsight/kafkactl/issues/217) Allow reset of consumer-group in dead state
+
+## 5.4.0 - 2024-11-28
+### Added
+- [#215](https://github.com/deviceinsight/kafkactl/pull/215) Add `--context` option to set command's context
+
+## 5.3.0 - 2024-08-14
+### Added
+- [#203](https://github.com/deviceinsight/kafkactl/pull/203) Add pod override fields affinity and tolerations
+- [#210](https://github.com/deviceinsight/kafkactl/pull/210) Create topic from file
+
+## 5.2.0 - 2024-08-08
+
+## 5.1.0 - 2024-08-07
+- [#209](https://github.com/deviceinsight/kafkactl/pull/209) Allow configuring basicAuth for avro schema registry
+
+### Added
+- [#207](https://github.com/deviceinsight/kafkactl/pull/207) Allow configuring TLS for avro schema registry
+- [#193](https://github.com/deviceinsight/kafkactl/pull/193) Print group instance IDs in `describe consumer-group` command
 
 ## 5.0.6 - 2024-03-14
-
-## 5.0.6 - 2024-03-14
-
-## 5.0.6 - 2024-03-14
-
-## 5.0.5 - 2024-03-12
-
-## 5.0.4 - 2024-03-12
-
-## 5.0.3 - 2024-03-12
-
-## 5.0.2 - 2024-03-08
-
-## 5.0.1 - 2024-03-08
-
-## 5.0.0 - 2024-03-08
 
 ### Added
 - [#190](https://github.com/deviceinsight/kafkactl/pull/190) Improve handling of project config files
@@ -63,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [#160](https://github.com/deviceinsight/kafkactl/pull/160) Fix kubectl version detection
 
 ### Added
-- [#159](https://github.com/deviceinsight/kafkactl/issues/159) Add ability to read config file from `$PWD/kafkactl.yml` 
+- [#159](https://github.com/deviceinsight/kafkactl/issues/159) Add ability to read config file from `$PWD/kafkactl.yml`
 
 ## 3.2.0 - 2023-08-17
 
@@ -137,7 +247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - [#112](https://github.com/deviceinsight/kafkactl/issues/112) make `maxMessageBytes` configurable in produce command.
-  
+
   :warning: this is a breaking change since the format of the `config.yml` has been changed in order to group producer
   related configurations under `context.producer`.
 
@@ -227,7 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - SASL mechanism support now also implemented for cluster admin
-- process no longer gets stuck when deserialization error occurs 
+- process no longer gets stuck when deserialization error occurs
 
 ### Added
 - calls to avro schema registry are now cached in memory to improve performance
@@ -302,13 +412,13 @@ of `plaintext`.
 
 ### Fixed
 - auto-completion should now work consistent for all supported shells and provides dynamic completion for
- e.g. names of topics or consumer-groups. 
+ e.g. names of topics or consumer-groups.
 
 ### Added
 - Add parameters `--key-encoding`, `--value-encoding` to produce command to write messages from hex/base64
 - Add parameters `--key-encoding`, `--value-encoding` to consume command to print messages as hex/base64
 - auto-completion now also works inside ubuntu docker image
-- bash auto-completion should work out of the box, when kafkactl is installed via snap 
+- bash auto-completion should work out of the box, when kafkactl is installed via snap
 
 ### Changed
 - improved and documented overriding config keys via environment variables
@@ -317,7 +427,7 @@ of `plaintext`.
 ## 1.9.0 - 2020-06-19
 
 ### Added
-- Add parameter `--header` to produce command to include message headers when writing messages 
+- Add parameter `--header` to produce command to include message headers when writing messages
 
 ### Changed
 - generation of commands and error handling have been refactored in order to allow for better testability

@@ -1,13 +1,11 @@
-BUILD_TS := $(shell date -Iseconds --utc)
+BUILD_TS := $(shell date -Iseconds -u)
 COMMIT_SHA := $(shell git rev-parse HEAD)
 VERSION := $(shell git describe --abbrev=0 --tags || echo "latest")
-OS ?= linux
+DOCS_TARGET ?= docs
 
 export CGO_ENABLED=0
-export GOOS=$(OS)
-export GO111MODULE=on
 
-binary := $(if $(filter-out windows,$(OS)),kafkactl,kafkactl.exe)
+binary := kafkactl
 
 module=$(shell go list -m)
 ld_flags := "-X $(module)/cmd.Version=$(VERSION) -X $(module)/cmd.GitCommit=$(COMMIT_SHA) -X $(module)/cmd.BuildTime=$(BUILD_TS)"
@@ -21,23 +19,23 @@ all: fmt lint cve-check test build docs
 
 fmt:
 	gofmt -s -l -w $(FILES) $(TESTS)
-	goimports -l -w $(FILES) $(TESTS)
+	go tool goimports -l -w $(FILES) $(TESTS)
 
 .PHONY: update-dependencies
 update-dependencies: # update dependencies to latest MINOR.PATCH
 	go get -t -u ./...
 
 lint:
-	golangci-lint run
+	go tool golangci-lint run
 
 .PHONY: cve-check
 cve-check:
-	govulncheck ./...
+	go tool govulncheck ./...
 
 .PHONY: test
 test:
 	rm -f test.log
-	go test -v -short ./...
+	go tool gotestsum --format testname --hide-summary=skipped -- -v -short ./...
 
 .PHONY: integration_test
 integration_test:
@@ -51,7 +49,9 @@ build:
 .PHONY: docs
 docs: build
 	touch /tmp/empty.yaml
-	./kafkactl docs --directory docs --single-page --config-file=/tmp/empty.yaml
+	./kafkactl docs --directory $(DOCS_TARGET) --single-page --config-file=/tmp/empty.yaml
+	echo "[![version](https://img.shields.io/badge/version-$(VERSION)-blue)](https://github.com/deviceinsight/kafkactl/releases/tag/$(VERSION))" > $(DOCS_TARGET)/version.md
+	cp index.md $(DOCS_TARGET)
 
 .PHONY: clean
 clean:
@@ -63,7 +63,6 @@ clean:
 # manually executing goreleaser:
 # export GITHUB_TOKEN=xyz
 # export AUR_SSH_PRIVATE_KEY=$(cat /path/to/id_aur)
-# snapcraft login
 # docker login
 # goreleaser --clean (--skip-validate)
 #

@@ -21,16 +21,6 @@ type StdLogger interface {
 	Println(v ...interface{})
 }
 
-var Fail = func(err error) {
-	_, _ = fmt.Fprintf(IoStreams.ErrOut, "%s\n", err.Error())
-	os.Exit(1)
-}
-
-var Failf = func(msg string, args ...interface{}) {
-	_, _ = fmt.Fprintf(IoStreams.ErrOut, msg+"\n", args...)
-	os.Exit(1)
-}
-
 func Warnf(msg string, args ...interface{}) {
 	_, _ = fmt.Fprintf(IoStreams.ErrOut, msg+"\n", args...)
 }
@@ -60,6 +50,12 @@ func PrintObject(object interface{}, format string) error {
 		_, _ = fmt.Fprintln(IoStreams.Out, string(yamlString))
 	} else if format == "json" {
 		jsonString, err := json.MarshalIndent(object, "", "\t")
+		if err != nil {
+			return errors.Wrap(err, "unable to format json")
+		}
+		_, _ = fmt.Fprintln(IoStreams.Out, string(jsonString))
+	} else if format == "json-raw" {
+		jsonString, err := json.Marshal(object)
 		if err != nil {
 			return errors.Wrap(err, "unable to format json")
 		}

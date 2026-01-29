@@ -5,7 +5,7 @@
 
 A command-line interface for interaction with Apache Kafka
 
-image:https://github.com/deviceinsight/kafkactl/workflows/Lint%20%2F%20Test%20%2F%20IT/badge.svg?branch=main[Build Status,link=https://github.com/deviceinsight/kafkactl/actions]
+image:https://github.com/deviceinsight/kafkactl/actions/workflows/lint_test.yml/badge.svg[Build Status,link=https://github.com/deviceinsight/kafkactl/actions]
 | image:https://img.shields.io/badge/command-docs-blue.svg[command docs,link=https://deviceinsight.github.io/kafkactl/]
 
 == Features
@@ -28,12 +28,10 @@ You can install the pre-compiled binary or compile from source.
 
 [,bash]
 ----
-# install tap repostory once
-brew tap deviceinsight/packages
 # install kafkactl
-brew install deviceinsight/packages/kafkactl
+brew install kafkactl
 # upgrade kafkactl
-brew upgrade deviceinsight/packages/kafkactl
+brew upgrade kafkactl
 ----
 
 *winget*:
@@ -50,13 +48,6 @@ Download the .deb or .rpm from the https://github.com/deviceinsight/kafkactl/rel
 
 There's a kafkactl https://aur.archlinux.org/packages/kafkactl/[AUR package] available for Arch. Install it with your AUR helper of choice (e.g. https://github.com/Jguer/yay[yay]):
 
-*snap*:
-
-[,bash]
-----
-snap install kafkactl
-----
-
 [,bash]
 ----
 yay -S kafkactl
@@ -70,7 +61,7 @@ Download the pre-compiled binaries from the https://github.com/deviceinsight/kaf
 
 [,bash]
 ----
-go get -u github.com/deviceinsight/kafkactl/v5
+go install github.com/deviceinsight/kafkactl/v5@latest
 ----
 
 *NOTE:* make sure that `kafkactl` is on PATH otherwise auto-completion won't work.
@@ -112,6 +103,8 @@ contexts:
       password: admin
       # optional configure sasl mechanism as plaintext, scram-sha256, scram-sha512, oauth (defaults to plaintext)
       mechanism: oauth
+      # optional configure sasl version as v0, v1 (defaults to not configured), Refer to: https://github.com/IBM/sarama/issues/3000#issuecomment-2415829478
+      version: v0
       # optional tokenProvider configuration (only used for 'sasl.mechanism=oauth')
       tokenprovider:
         # plugin to use as token provider implementation (see plugin section)
@@ -131,6 +124,10 @@ contexts:
       image: private.registry.com/deviceinsight/kafkactl
       # optional: secret for private docker registry
       imagePullSecret: registry-secret
+      # optional: secret containing tls certificates (e.g. ca.crt, cert.crt, key.key)
+      tlsSecret: tls-secret
+      # optional: Username to impersonate for the kubectl command
+      asUser: user
       # optional: serviceAccount to use for the pod
       serviceAccount: my-service-account
       # optional: keep pod after exit (can be set to true for debugging)
@@ -144,6 +141,33 @@ contexts:
       # optional: nodeSelector to add to the pod
       nodeSelector:
         key: value
+      # optional: resource limits to add to the pod
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
+
+      # optional: affinity to add to the pod
+      affinity:
+        # note: other types of affinity also supported
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "<key>"
+                    operator: "<operator>"
+                    values: [ "<value>" ]
+
+      # optional: tolerations to add to the pod
+      tolerations:
+        - key: "<key>"
+          operator: "<operator>"
+          value: "<value>"
+          effect: "<effect>"
+
     # optional: clientID config (defaults to kafkactl-{username})
     clientID: my-client-id
 
@@ -153,12 +177,31 @@ contexts:
     # optional: timeout for admin requests (defaults to 3s)
     requestTimeout: 10s
 
-    # optional: avro schema registry
+    # optional: avro configuration
     avro:
-      schemaRegistry: localhost:8081
       # optional: configure codec for (de)serialization as standard,avro (defaults to standard)
       # see: https://github.com/deviceinsight/kafkactl/issues/123
       jsonCodec: avro
+
+    # optional: schema registry
+    schemaRegistry:
+      url: localhost:8081
+
+      # optional: timeout for requests (defaults to 5s)
+      requestTimeout: 10s
+
+      # optional: basic auth credentials
+      username: admin
+      password: admin
+
+      # optional: tls config for avro
+      tls:
+        enabled: true
+        ca: my-ca
+        cert: my-cert
+        certKey: my-key
+        # set insecure to true to ignore all tls verification (defaults to false)
+        insecure: false
 
     # optional: default protobuf messages search paths
     protobuf:
@@ -169,6 +212,13 @@ contexts:
         - "otherMessage.proto"
       protosetFiles:
         - "/usr/include/protoset/other.protoset"
+      # see: https://pkg.go.dev/google.golang.org/protobuf@v1.36.6/encoding/protojson#MarshalOptions
+      marshalOptions:
+        allowPartial: true
+        useProtoNames: true
+        useEnumNumbers: true
+        emitUnpopulated: true
+        emitDefaultValues: true
 
     producer:
       # optional: changes the default partitioner
@@ -184,9 +234,6 @@ contexts:
     consumer:
       # optional: isolationLevel (defaults to ReadCommitted)
       isolationLevel: ReadUncommitted
-
-# optional for project config files
-current-context: default
 ----
 
 [#_config_file_read_order]
@@ -199,8 +246,6 @@ The config file location is resolved by
  ** `$HOME/.config/kafkactl/config.yml`
  ** `$HOME/.kafkactl/config.yml`
  ** `$APPDATA/kafkactl/config.yml`
- ** `$SNAP_REAL_HOME/.kafkactl/config.yml`
- ** `$SNAP_DATA/kafkactl/config.yml`
  ** `/etc/kafkactl/config.yml`
 
 [#_project_config_files]
@@ -219,20 +264,21 @@ During initialization _kafkactl_ starts from the current working directory and r
 config file. The recursive lookup ends at the boundary of a git repository (i.e. if a `.git` folder is found).
 This way, _kafkactl_ can be used conveniently anywhere in the git repository.
 
-Additionally, project config files have a special feature to use them read-only. Topically, if you configure more than
-one context in a config file, and you switch the context with `kafkactl config use-context xy` this will lead to a write
-operation on the config file to save the _current context_.
+[#_current_context]
+==== Current context
 
-In order to avoid this for project config files, one can just omit the `current-context` parameter from the config file.
-In this case _kafkactl_ will delegate read and write operations for the _current context_ to the next configuration file
-according to <<_config_file_read_order, the config file read order>>.
+The current context can be set via commandline argument `--context`, environment variable `CURRENT_CONTEXT` or
+it can be defined in a file.
 
+If no current context is defined, the first context in the config file is used as current context. Additionally,
+in this case a file storing the current context is created.
+
+The file is typically stored next to the config file and named `current-context.yml`.
+The location of the file can be overridden via environment variable `KAFKA_CTL_WRITABLE_CONFIG`.
 
 === Auto completion
 
 ==== bash
-
-*NOTE:* if you installed via snap, bash completion should work automatically.
 
 ----
 source <(kafkactl completion bash)
@@ -325,6 +371,31 @@ contexts:
       namespace: k8s-namespace
 ----
 
+If you are using `tlsSecret`, make sure that you set `ca`, `cert` and `certKey`. For example secret created by
+Strimzi Kafka operator will have values `ca.crt`, `user.crt`, `user.key`:
+
+[,$yaml]
+----
+contexts:
+  kafka-cluster:
+    brokers:
+      - broker1:9092
+      - broker2:9092
+    kubernetes:
+      enabled: true
+      binary: kubectl #optional
+      kubeContext: k8s-cluster
+      namespace: k8s-namespace
+      tlsSecret: tls-secret
+    tls:
+      enabled: true
+      ca: ca.crt
+      cert: user.crt
+      certKey: user.key
+      # set insecure to true to ignore all tls verification (defaults to false)
+      insecure: false
+----
+
 Instead of directly talking to kafka brokers a kafkactl docker image is deployed as a pod into the kubernetes
 cluster, and the defined namespace. Standard-Input and Standard-Output are then wired between the pod and your shell
 running kafkactl.
@@ -349,10 +420,6 @@ ____
 :bulb: The first option takes a bit longer to start up since an Ubuntu based docker image is used in order to have
 a bash available. The second option uses a docker image build from scratch and should therefore be quicker.
 Which option is more suitable, will depend on your use-case.
-____
-
-____
-:warning: currently _kafkactl_ must *NOT* be installed via _snap_ in order for the kubernetes feature to work. The snap runs in a sandbox and is therefore unable to access the `kubectl` binary.
 ____
 
 == Configuration via environment variables
@@ -384,7 +451,64 @@ See the plugin documentation for additional documentation and usage examples.
 
 Available plugins:
 
+* https://github.com/deviceinsight/kafkactl-plugins/blob/main/aws/README.adoc[aws plugin]
 * https://github.com/deviceinsight/kafkactl-plugins/blob/main/azure/README.adoc[azure plugin]
+
+=== Generic Token Provider
+
+For cases where a custom plugin is not needed, _kafkactl_ provides a built-in `generic` token provider that executes a script to retrieve OAuth tokens dynamically.
+
+==== Configuration
+
+[,yaml]
+----
+contexts:
+  my-cluster:
+    sasl:
+      enabled: true
+      mechanism: oauth
+      tokenprovider:
+        plugin: generic
+        options:
+          script: /path/to/get-token.sh
+          args:
+            - intended-scope
+----
+
+==== Script Output Format
+
+The script must output a JSON object with the following structure:
+
+[,json]
+----
+{
+  "token": "your-oauth-access-token",
+  "extensions": {
+    "key": "value"
+  }
+}
+----
+
+* `token` (required): The OAuth access token string
+* `extensions` (optional): A map of string key-value pairs for OAuth extensions
+
+==== Example Script
+
+[,bash]
+----
+#!/bin/bash
+# Example script that fetches a token from an OAuth provider
+SCOPE=${1:-kafka}
+
+curl -s --fail -X POST "$AUTH_SERVER/oauth/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=$CLIENT_ID" \
+  -d "client_secret=$CLIENT_SECRET" \
+  -d "scope=$SCOPE" | jq -r '{"token": .access_token}'
+----
+
+The script is executed each time a token is needed, allowing for automatic token refresh.
 
 == Examples
 
@@ -453,7 +577,7 @@ kafkactl consume my-topic --from-timestamp 2014-04-26
 ----
 
 The `from-timestamp` parameter supports different timestamp formats. It can either be a number representing the epoch milliseconds
-or a string with a timestamp in one of the https://github.com/deviceinsight/kafkactl/blob/main/util/util.go#L10[supported date formats].
+or a string with a timestamp in one of the https://github.com/deviceinsight/kafkactl/blob/main/internal/util/util.go#L10[supported date formats].
 
 *NOTE:* `--from-timestamp` is not designed to schedule the beginning of consumer's consumption. The offset corresponding to the timestamp is computed at the beginning of the process. So if you set it to a date in the future, the consumer will start from the latest offset.
 
@@ -466,7 +590,7 @@ kafkactl consume my-topic --from-timestamp 2017-07-19T03:30:00 --to-timestamp 20
 
 The `to-timestamp` parameter supports the same formats as `from-timestamp`.
 
-*NOTE:* `--to-timestamp` is not designed to schedule the end of consumer's consumption. The offset corresponding to the timestamp is computed at the begininng of the process. So if you set it to a date in the future, the consumer will stop at the current latest offset.
+*NOTE:* `--to-timestamp` is not designed to schedule the end of consumer's consumption. The offset corresponding to the timestamp is computed at the beginning of the process. So if you set it to a date in the future, the consumer will stop at the current latest offset.
 
 The following example prints keys in hex and values in base64:
 
@@ -494,6 +618,48 @@ If you want to limit the number of messages that will be read, specify `--max-me
 [,bash]
 ----
 kafkactl consume my-topic --max-messages 2
+----
+
+Messages can be filtered by key, value, or headers using glob patterns:
+
+[,bash]
+----
+# filter by key pattern
+kafkactl consume my-topic --filter-key "user-*" --print-keys
+
+# filter by value pattern
+kafkactl consume my-topic --filter-value "error:*"
+
+# filter by header pattern
+kafkactl consume my-topic --filter-header "trace-id=abc-*" --print-headers
+
+# combine multiple filters (all must match)
+kafkactl consume my-topic --filter-key "user-*" --filter-value "*error*" --filter-header "env=prod"
+----
+
+Glob patterns support the following wildcards:
+
+* `*` - matches any sequence of characters
+* `?` - matches a single character
+* `[abc]` - matches any character in the set
+* `[!abc]` - matches any character not in the set
+* `{a,b,c}` - matches any of the alternatives
+
+Examples of glob patterns:
+
+[,bash]
+----
+# match keys starting with "user-"
+--filter-key "user-*"
+
+# match keys for user or admin
+--filter-key "{user,admin}-*"
+
+# match values containing "error" or "warn"
+--filter-value "*error*" or --filter-value "*warn*"
+
+# match specific header patterns
+--filter-header "trace-id=abc-???"
 ----
 
 === Producing messages
@@ -537,9 +703,11 @@ It is also possible to produce messages in json format:
 
 [,bash]
 ----
-# each line in myfile.json is expected to contain a json object with fields key, value
+# each line in myfile.json is expected to contain a json object with fields key, value and headers
 kafkactl produce my-topic --file=myfile.json --input-format=json
 cat myfile.json | kafkactl produce my-topic --input-format=json
+echo '{"value": "my-value"}' | kafkactl produce my-topic --input-format=json
+echo '{"key": "my-key", "value": "my-value", "headers": {"my-header": "val"}}' | kafkactl produce my-topic --input-format=json
 ----
 
 the number of messages produced per second can be controlled with the `--rate` parameter:
@@ -607,7 +775,7 @@ Producing protobuf message converted from JSON:
 kafkactl produce my-topic --key='{"keyField":123}' --key-proto-type MyKeyMessage --value='{"valueField":"value"}' --value-proto-type MyValueMessage --proto-file kafkamsg.proto
 ----
 
-A more complex protobuf message converted from a multi-line JSON string can be produced using a file input with custom separators. 
+A more complex protobuf message converted from a multi-line JSON string can be produced using a file input with custom separators.
 
 For example, if you have the following protobuf definition (`complex.proto`):
 
@@ -666,8 +834,8 @@ In order to enable avro support you just have to add the schema registry to your
 ----
 contexts:
   localhost:
-    avro:
-      schemaRegistry: localhost:8081
+    schemaRegistry:
+      url: localhost:8081
 ----
 
 ==== Producing to an avro topic
@@ -689,7 +857,7 @@ curl -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
 --data '{"schema": "{\"type\": \"record\", \"name\": \"LongList\", \"fields\" : [{\"name\": \"next\", \"type\": [\"null\", \"LongList\"], \"default\": null}]}"}' \
 http://localhost:8081/subjects/avro_topic-value/versions
 # produce a message
-kafkactl produce avro_topic --value {\"next\":{\"LongList\":{}}}
+kafkactl produce avro_topic --value {\"next\":{\"next\":{}}}
 # consume the message
 kafkactl consume avro_topic --from-beginning --print-schema -o yaml
 ----
@@ -780,7 +948,78 @@ or with protoset
 kafkactl consume <topic> --key-proto-type TopicKey --value-proto-type TopicValue --protoset-file kafkamsg.protoset
 ----
 
-=== Altering topics
+
+
+=== Topic management
+
+==== List topics
+
+In order to get a list of topics the `get topics` command can be used:
+
+[,bash]
+----
+kafkactl get topics
+kafkactl list topics
+----
+
+==== Describe topic
+
+A detailed description of a topic can be obtained with `describe topic`:
+
+[,bash]
+----
+kafkactl describe topic my-topic
+----
+
+Per default only overwritten config entries are printed. To print all config entries including defaults use:
+
+[,bash]
+----
+kafkactl describe topic my-topic --all-configs
+----
+
+To print only partition details of partitions with messages use:
+[,bash]
+----
+kafkactl describe topic my-topic --skip-empty
+----
+
+==== Create topic
+
+The `create topic` allows you to create one or multiple topics.
+
+Basic usage:
+[,bash]
+----
+kafkactl create topic my-topic
+----
+
+The partition count can be specified with:
+[,bash]
+----
+kafkactl create topic my-topic --partitions 32
+----
+
+The replication factor can be specified with:
+[,bash]
+----
+kafkactl create topic my-topic --replication-factor 3
+----
+
+Configs can also be provided:
+[,bash]
+----
+kafkactl create topic my-topic --config retention.ms=3600000 --config=cleanup.policy=compact
+----
+
+The topic configuration can also be taken from an existing topic using the following:
+[,bash]
+----
+kafkactl describe topic my-topic -o json > my-topic-config.json
+kafkactl create topic my-topic-clone --file my-topic-config.json
+----
+
+==== Altering topics
 
 Using the `alter topic` command allows you to change the partition count, replication factor and topic-level
 configurations of an existing topic.
@@ -815,7 +1054,7 @@ ____
 :bulb: use the flag `--validate-only` to perform a dry-run without actually modifying the topic
 ____
 
-=== Altering partitions
+==== Altering partitions
 
 The assigned replicas of a partition can directly be altered with:
 
@@ -825,7 +1064,7 @@ The assigned replicas of a partition can directly be altered with:
 kafkactl alter partition my-topic 3 -r 102,103
 ----
 
-=== Clone topic
+==== Clone topic
 
 New topic may be created from existing topic as follows:
 
@@ -837,7 +1076,21 @@ kafkactl clone topic source-topic target-topic
 Source topic must exist, target topic must not exist.
 `kafkactl` clones partitions count, replication factor and config entries.
 
-=== Consumer groups
+
+==== Delete Records from a topics
+
+Command to be used to delete records from partition, which have an offset smaller than the provided offset.
+
+[,bash]
+----
+# delete records with offset < 123 from partition 0 and offset < 456 from partition 1
+kafkactl delete records my-topic --offset 0=123 --offset 1=456
+----
+
+
+=== Consumer group management
+
+==== List Consumer groups
 
 In order to get a list of consumer groups the `get consumer-groups` command can be used:
 
@@ -854,6 +1107,8 @@ kafkactl get cg
 To get detailed information about the consumer group use `describe consumer-group`. If the parameter `--partitions`
 is provided details will be printed for each partition otherwise the partitions are aggregated to the clients.
 
+==== Describe Consumer group
+
 [,bash]
 ----
 # describe a consumer group
@@ -866,17 +1121,7 @@ kafkactl describe consumer-group my-group --topic my-topic
 kafkactl describe cg my-group
 ----
 
-=== Delete Records from a topics
-
-Command to be used to delete records from partition, which have an offset smaller than the provided offset.
-
-[,bash]
-----
-# delete records with offset < 123 from partition 0 and offset < 456 from partition 1
-kafkactl delete records my-topic --offset 0=123 --offset 1=456
-----
-
-=== Create consumer groups
+==== Create consumer groups
 
 A consumer-group can be created as follows:
 
@@ -892,7 +1137,7 @@ kafkactl create consumer-group my-group --topic my-topic --partition 5 --offset 
 kafkactl create consumer-group my-group --topic my-topic-a --topic my-topic-b --oldest
 ----
 
-=== Clone consumer group
+==== Clone consumer group
 
 A consumer group may be created as clone of another consumer group as follows:
 
@@ -904,7 +1149,7 @@ kafkactl clone consumer-group source-group target-group
 Source group must exist and have committed offsets. Target group must not exist or don't have committed offsets.
 `kafkactl` clones topic assignment and partition offsets.
 
-=== Reset consumer group offsets
+==== Reset consumer group offsets
 
 in order to ensure the reset does what it is expected, per default only
 the results are printed without actually executing it. Use the additional parameter `--execute` to perform the reset.
@@ -927,7 +1172,7 @@ kafkactl reset offset my-group --topic my-topic-a --to-datetime 2014-04-26T17:24
 kafkactl reset offset my-group --topic my-topic-a --to-datetime 1697726906352
 ----
 
-=== Delete consumer group offsets
+==== Delete consumer group offsets
 
 In order to delete a consumer group offset use `delete offset`
 
@@ -939,7 +1184,7 @@ kafkactl delete offset my-group --topic my-topic
 kafkactl delete offset my-group --topic my-topic --partition 1
 ----
 
-=== Delete consumer groups
+==== Delete consumer groups
 
 In order to delete a consumer group or a list of consumer groups use `delete consumer-group`
 
@@ -979,6 +1224,10 @@ kafkactl get access-control-list
 kafkactl get acl --topics
 # filter only consumer group resources with operation read
 kafkactl get acl --groups --operation read
+# filter specific topic and user
+kafkactl get acl --resource-name my-topic --principal User:myUser
+# filter specific topic and host
+kafkactl get acl --resource-name my-topic --host my-host
 ----
 
 ==== Delete ACLs
@@ -993,9 +1242,15 @@ kafkactl delete acl --topics --operation any --pattern any
 kafkactl delete acl --cluster --operation any --pattern any
 # delete all consumer-group acls with operation describe, patternType prefixed and permissionType allow
 kafkactl delete acl --groups --operation describe --pattern prefixed --allow
+# delete all topic acls for a principal
+kafkactl delete acl --topics --operation any --pattern any --prinicipal User:myUser
+# delete all topic acls for a host
+kafkactl delete acl --topics --operation any --pattern any --host my-host
 ----
 
-=== Getting Brokers
+=== Broker Management
+
+==== Getting Brokers
 
 To get the list of brokers of a kafka cluster use `get brokers`
 
@@ -1005,7 +1260,7 @@ To get the list of brokers of a kafka cluster use `get brokers`
 kafkactl get brokers
 ----
 
-=== Describe Broker
+==== Describe Broker
 
 To view configs for a single broker use `describe broker`
 
@@ -1013,6 +1268,173 @@ To view configs for a single broker use `describe broker`
 ----
 # describe broker
 kafkactl describe broker 1
+----
+
+Per default only dynamic configs are shown. To view all configs use `--all-configs`
+
+[,bash]
+----
+kafkactl describe broker 1 --all-configs
+----
+
+Additionally, only default configs can be shown with:
+[,bash]
+----
+kafkactl describe broker default
+----
+
+==== Altering brokers
+
+Using the `alter broker` command allows you to change dynamic broker configurations for individual brokers or cluster-wide defaults.
+
+To alter a configuration for a specific broker:
+
+[,bash]
+----
+kafkactl alter broker 101 --config background.threads=8
+----
+
+To alter a cluster-wide default configuration (affects brokers without individual overrides):
+
+[,bash]
+----
+kafkactl alter broker default --config background.threads=8
+----
+
+Multiple configurations can be altered simultaneously:
+
+[,bash]
+----
+kafkactl alter broker 101 --config background.threads=8 --config log.cleaner.threads=2
+----
+
+____
+:bulb: use the flag `--validate-only` to perform a dry-run without actually modifying the broker configuration
+____
+
+____
+:information_source: only dynamically configurable broker properties can be altered. Static properties like `broker.id` or `log.dirs` require a broker restart to change.
+____
+
+
+=== SCRAM User Management
+
+kafkactl provides comprehensive SCRAM (Salted Challenge Response Authentication Mechanism) user management capabilities for Kafka clusters that support SCRAM authentication. This allows you to create, modify, and manage user credentials directly through kafkactl.
+
+==== Requirements
+
+* Kafka 2.7.0+ (for SCRAM user management APIs)
+* Admin privileges on the Kafka cluster
+* SCRAM-enabled listeners configured on Kafka brokers
+
+==== Supported Mechanisms
+
+* `SCRAM-SHA-256` (default)
+* `SCRAM-SHA-512`
+
+==== Create SCRAM Users
+
+Create a new SCRAM user with default settings:
+
+[,bash]
+----
+# Create user with SCRAM-SHA-256 (default mechanism)
+kafkactl create user myuser --password mypassword
+
+# Create user with specific mechanism
+kafkactl create user myuser --password mypassword --mechanism SCRAM-SHA-512
+
+# Create user with custom iterations (default: 4096)
+kafkactl create user myuser --password mypassword --iterations 8192
+
+# Create user with custom base64-encoded salt
+kafkactl create user myuser --password mypassword --salt "c2FsdA=="
+----
+
+==== Alter SCRAM Users
+
+Update existing user credentials:
+
+[,bash]
+----
+# Update user password (keeps existing mechanism)
+kafkactl alter user myuser --password newpassword
+
+# Update user with different mechanism
+kafkactl alter user myuser --password newpassword --mechanism SCRAM-SHA-512
+
+# Update with custom iterations
+kafkactl alter user myuser --password newpassword --iterations 16384
+----
+
+==== Delete SCRAM Users
+
+Remove SCRAM credentials by mechanism:
+
+[,bash]
+----
+# Delete SCRAM-SHA-256 credentials (default)
+kafkactl delete user myuser --mechanism SCRAM-SHA-256
+
+# Delete SCRAM-SHA-512 credentials
+kafkactl delete user myuser --mechanism SCRAM-SHA-512
+
+# Note: A user may have multiple mechanisms, delete each separately
+----
+
+==== List SCRAM Users
+
+Get all SCRAM users and their mechanisms:
+
+[,bash]
+----
+# List all users (table format)
+kafkactl get users
+
+# List users in JSON format
+kafkactl get users -o json
+
+# List users in YAML format
+kafkactl get users -o yaml
+----
+
+==== Describe SCRAM User
+
+Get detailed information about a specific user:
+
+[,bash]
+----
+# Describe user (table format)
+kafkactl describe user myuser
+
+# Describe user in JSON format
+kafkactl describe user myuser -o json
+
+# Describe user in YAML format
+kafkactl describe user myuser -o yaml
+----
+
+==== Security Considerations
+
+* **Salt Generation**: kafkactl automatically generates cryptographically secure random salts unless custom salts are provided
+* **Password Security**: Passwords are transmitted securely to Kafka and never stored by kafkactl
+* **Mechanism Support**: Users can have credentials for multiple SCRAM mechanisms simultaneously
+* **Admin Privileges**: SCRAM user management requires admin-level access to the Kafka cluster
+
+==== Multi-Mechanism Users
+
+A single user can have credentials for multiple SCRAM mechanisms:
+
+[,bash]
+----
+# Create user with SCRAM-SHA-256
+kafkactl create user myuser --password mypassword --mechanism SCRAM-SHA-256
+
+# Add SCRAM-SHA-512 credentials to the same user
+kafkactl create user myuser --password mypassword --mechanism SCRAM-SHA-512
+
+# User now has both mechanisms
+kafkactl describe user myuser
 ----
 
 == Development
@@ -1023,21 +1445,4 @@ In order to see linter errors before commit, add the following pre-commit hook:
 ----
 pip install --user pre-commit
 pre-commit install
-----
-
-=== Pull requests
-
-[,shell]
-----
-# checkout locally
-PULL_REQUEST_ID=123
-LOCAL_BRANCH_NAME=feature/abc
-git fetch origin pull/${PULL_REQUEST_ID}/head:${LOCAL_BRANCH_NAME}
-git checkout ${LOCAL_BRANCH_NAME}
-
-# push to PR
-NAME=username
-REMOTE_BRANCH_NAME=abc
-git remote add $NAME git@github.com:$NAME/kafkactl.git
-git push $NAME ${LOCAL_BRANCH_NAME}:${REMOTE_BRANCH_NAME}
 ----

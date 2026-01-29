@@ -31,7 +31,7 @@ var configFile = "it-config.yml"
 
 var testIoStreams output.IOStreams
 
-func getRootDir() (string, error) {
+func GetRootDir() (string, error) {
 
 	path, err := os.Getwd()
 	if err != nil {
@@ -57,7 +57,7 @@ func getRootDir() (string, error) {
 
 func init() {
 
-	rootDir, err := getRootDir()
+	rootDir, err := GetRootDir()
 	if err != nil {
 		panic(err)
 	}
@@ -84,6 +84,11 @@ func StartIntegrationTest(t *testing.T) {
 }
 
 func StartIntegrationTestWithContext(t *testing.T, context string) {
+
+	if !strings.HasSuffix(t.Name(), "Integration") {
+		t.Fatalf("integration tests have to be suffixed with 'Integration' to ensure they are executed")
+	}
+
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -143,7 +148,7 @@ func SwitchContext(context string) {
 
 func startTest(t *testing.T, logFilename string) {
 
-	rootDir, err := getRootDir()
+	rootDir, err := GetRootDir()
 	if err != nil {
 		panic(err)
 	}
@@ -172,13 +177,21 @@ func startTest(t *testing.T, logFilename string) {
 }
 
 func AssertEquals(t *testing.T, expected, actual string) {
-
+	t.Helper()
 	if strings.TrimSpace(actual) != strings.TrimSpace(expected) {
 		t.Fatalf("unexpected output:\nexpected:\n--\n%s\n--\nactual:\n--\n%s\n--", expected, strings.TrimSpace(actual))
 	}
 }
 
+func AssertIntEquals(t *testing.T, expected, actual int) {
+	t.Helper()
+	if actual != expected {
+		t.Fatalf("unexpected output:\nexpected:\n--\n%d\n--\nactual:\n--\n%d\n--", expected, actual)
+	}
+}
+
 func AssertArraysEquals(t *testing.T, expected, actual []string) {
+	t.Helper()
 	sort.Strings(expected)
 	sort.Strings(actual)
 
@@ -188,7 +201,7 @@ func AssertArraysEquals(t *testing.T, expected, actual []string) {
 }
 
 func AssertErrorContainsOneOf(t *testing.T, expected []string, err error) {
-
+	t.Helper()
 	if err == nil {
 		t.Fatalf("expected error to contain: %s\n: %v", expected, "nil")
 	}
@@ -203,31 +216,27 @@ func AssertErrorContainsOneOf(t *testing.T, expected []string, err error) {
 }
 
 func AssertErrorContains(t *testing.T, expected string, err error) {
-
+	t.Helper()
 	if err == nil {
 		t.Fatalf("expected error to contain: %s\n: %v", expected, "nil")
 	}
 
 	if !strings.Contains(err.Error(), expected) {
-		t.Fatalf("expected error to contain: %s\n: %v", expected, err)
+		t.Fatalf("expected error to contain: %s\nactual: %s", expected, err.Error())
 	}
 }
 
 func AssertContainSubstring(t *testing.T, expected, actual string) {
+	t.Helper()
 	if !strings.Contains(actual, expected) {
 		t.Fatalf("expected string to contain: %s actual: %s", expected, actual)
 	}
 }
 
 func AssertContains(t *testing.T, expected string, array []string) {
+	t.Helper()
 	if !util.ContainsString(array, expected) {
 		t.Fatalf("expected array to contain: %s\narray: %v", expected, array)
-	}
-}
-
-func AssertContainsNot(t *testing.T, unexpected string, array []string) {
-	if util.ContainsString(array, unexpected) {
-		t.Fatalf("expected array to NOT contain: %s\narray: %v", unexpected, array)
 	}
 }
 
@@ -270,21 +279,12 @@ func (kafkactl *KafkaCtlTestCommand) Execute(args ...string) (cmd *cobra.Command
 
 	kafkactl.Root.SetArgs(args)
 
-	var specificErr error
-
-	output.Fail = func(err error) {
-		specificErr = err
-	}
-
 	command, generalErr := kafkactl.Root.ExecuteC()
 
 	output.TestLogf("executed: kafkactl %s", strings.Join(args, " "))
 	output.TestLogf("response: %s %s", kafkactl.GetStdOut(), kafkactl.GetStdErr())
 
-	if generalErr != nil {
-		return command, generalErr
-	}
-	return command, specificErr
+	return command, generalErr
 }
 
 func (kafkactl *KafkaCtlTestCommand) GetStdOut() string {
@@ -297,7 +297,7 @@ func (kafkactl *KafkaCtlTestCommand) GetStdOutLines() []string {
 
 	stdOutput := space.ReplaceAllString(kafkactl.GetStdOut(), "|")
 
-	return strings.Split(stdOutput, "\n")
+	return strings.Split(strings.TrimSpace(stdOutput), "\n")
 }
 
 func (kafkactl *KafkaCtlTestCommand) GetStdErr() string {

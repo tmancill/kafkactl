@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,7 +9,6 @@ import (
 	"github.com/deviceinsight/kafkactl/v5/internal/global"
 
 	"github.com/deviceinsight/kafkactl/v5/internal"
-	"github.com/deviceinsight/kafkactl/v5/internal/output"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -18,7 +18,7 @@ var KafkaCtlVersion string
 
 type Operation interface {
 	Attach() error
-	TryRun(cmd *cobra.Command, args []string) bool
+	Run(cmd *cobra.Command, args []string) error
 }
 
 type operation struct {
@@ -32,7 +32,6 @@ func NewOperation() Operation {
 }
 
 func (op *operation) initialize(context internal.ClientContext) error {
-
 	if !context.Kubernetes.Enabled {
 		return errors.Errorf("context is not a kubernetes context: %s", context.Name)
 	}
@@ -49,47 +48,47 @@ func (op *operation) initialize(context internal.ClientContext) error {
 }
 
 func (op *operation) Attach() error {
-
-	context, err := internal.CreateClientContext()
+	clientContext, err := internal.CreateClientContext()
 	if err != nil {
 		return err
 	}
 
-	if err := op.initialize(context); err != nil {
+	if err := op.initialize(clientContext); err != nil {
 		return err
 	}
 
-	exec := newExecutor(context, op.runner)
+	exec, err := newExecutor(context.Background(), clientContext, op.runner)
+	if err != nil {
+		return err
+	}
 
-	podEnvironment := parsePodEnvironment(context)
+	podEnvironment := parsePodEnvironment(clientContext)
 
-	return exec.Run("ubuntu", "bash", nil, podEnvironment)
+	return exec.Run("ubuntu", "bash", nil, podEnvironment, "--tty")
 }
 
-func (op *operation) TryRun(cmd *cobra.Command, args []string) bool {
-
+func (op *operation) Run(cmd *cobra.Command, args []string) error {
 	context, err := internal.CreateClientContext()
 	if err != nil {
-		return false
+		return err
 	}
 
 	if !context.Kubernetes.Enabled {
-		return false
+		return fmt.Errorf("kubernetes not enabled")
 	}
 
-	if err := op.run(context, cmd, args); err != nil {
-		output.Fail(err)
-	}
-	return true
+	return op.run(cmd.Context(), context, cmd, args)
 }
 
-func (op *operation) run(context internal.ClientContext, cmd *cobra.Command, args []string) error {
-
-	if err := op.initialize(context); err != nil {
+func (op *operation) run(ctx context.Context, clientContext internal.ClientContext, cmd *cobra.Command, args []string) error {
+	if err := op.initialize(clientContext); err != nil {
 		return err
 	}
 
-	exec := newExecutor(context, op.runner)
+	exec, err := newExecutor(ctx, clientContext, op.runner)
+	if err != nil {
+		return err
+	}
 
 	kafkaCtlCommand := parseCompleteCommand(cmd, []string{})
 	kafkaCtlFlags, err := parseFlags(cmd)
@@ -97,7 +96,7 @@ func (op *operation) run(context internal.ClientContext, cmd *cobra.Command, arg
 		return err
 	}
 
-	podEnvironment := parsePodEnvironment(context)
+	podEnvironment := parsePodEnvironment(clientContext)
 
 	kafkaCtlCommand = append(kafkaCtlCommand, args...)
 	kafkaCtlCommand = append(kafkaCtlCommand, kafkaCtlFlags...)
@@ -172,7 +171,6 @@ func parseCompleteCommand(cmd *cobra.Command, found []string) []string {
 }
 
 func parsePodEnvironment(context internal.ClientContext) []string {
-
 	var envVariables []string
 
 	envVariables = appendStrings(envVariables, global.Brokers, context.Brokers)
@@ -190,8 +188,16 @@ func parsePodEnvironment(context internal.ClientContext) []string {
 	envVariables = appendStringIfDefined(envVariables, global.RequestTimeout, context.RequestTimeout.String())
 	envVariables = appendStringIfDefined(envVariables, global.ClientID, context.ClientID)
 	envVariables = appendStringIfDefined(envVariables, global.KafkaVersion, context.KafkaVersion.String())
-	envVariables = appendStringIfDefined(envVariables, global.AvroSchemaRegistry, context.AvroSchemaRegistry)
-	envVariables = appendStringIfDefined(envVariables, global.AvroJSONCodec, context.AvroJSONCodec.String())
+	envVariables = appendStringIfDefined(envVariables, global.AvroJSONCodec, context.Avro.JSONCodec.String())
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryURL, context.SchemaRegistry.URL)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryRequestTimeout, context.SchemaRegistry.RequestTimeout.String())
+	envVariables = appendBool(envVariables, global.SchemaRegistryTLSEnabled, context.SchemaRegistry.TLS.Enabled)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryTLSCa, context.SchemaRegistry.TLS.CA)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryTLSCert, context.SchemaRegistry.TLS.Cert)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryTLSCertKey, context.SchemaRegistry.TLS.CertKey)
+	envVariables = appendBool(envVariables, global.SchemaRegistryTLSInsecure, context.SchemaRegistry.TLS.Insecure)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryUsername, context.SchemaRegistry.Username)
+	envVariables = appendStringIfDefined(envVariables, global.SchemaRegistryPassword, context.SchemaRegistry.Password)
 	envVariables = appendStrings(envVariables, global.ProtobufProtoSetFiles, context.Protobuf.ProtosetFiles)
 	envVariables = appendStrings(envVariables, global.ProtobufImportPaths, context.Protobuf.ProtoImportPaths)
 	envVariables = appendStrings(envVariables, global.ProtobufProtoFiles, context.Protobuf.ProtoFiles)
@@ -236,7 +242,7 @@ func appendMapIfDefined(env []string, key string, value map[string]any) []string
 		if err != nil {
 			panic(err)
 		}
-		return append(env, fmt.Sprintf("%s=%q", key, jsonMap))
+		return append(env, fmt.Sprintf("%s=%s", key, jsonMap))
 	}
 	return env
 }

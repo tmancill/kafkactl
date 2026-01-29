@@ -1,11 +1,7 @@
 package config
 
 import (
-	"sort"
-
 	"github.com/deviceinsight/kafkactl/v5/internal/global"
-
-	"github.com/deviceinsight/kafkactl/v5/internal/output"
 	"github.com/pkg/errors"
 
 	"strings"
@@ -22,7 +18,7 @@ func newUseContextCmd() *cobra.Command {
 		Short:   "switch active context",
 		Long:    `command to switch active context`,
 		Args:    cobra.MinimumNArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		RunE: func(_ *cobra.Command, args []string) error {
 
 			context := strings.Join(args, " ")
 
@@ -30,27 +26,20 @@ func newUseContextCmd() *cobra.Command {
 
 			// check if it is an existing context
 			if _, ok := contexts[context]; !ok {
-				output.Fail(errors.Errorf("not a valid context: %s", context))
+				return errors.Errorf("not a valid context: %s", context)
 			}
 
 			if err := global.SetCurrentContext(context); err != nil {
-				output.Fail(errors.Wrap(err, "unable to write config"))
+				return errors.Wrap(err, "unable to write config")
 			}
+			return nil
 		},
 		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 			if len(args) != 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
 
-			contextMap := viper.GetStringMap("contexts")
-			contexts := make([]string, 0, len(contextMap))
-			for k := range contextMap {
-				contexts = append(contexts, k)
-			}
-
-			sort.Strings(contexts)
-
-			return contexts, cobra.ShellCompDirectiveNoFileComp
+			return global.ListAvailableContexts(), cobra.ShellCompDirectiveNoFileComp
 		},
 	}
 

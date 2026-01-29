@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -26,23 +27,28 @@ type executor struct {
 	kubectlBinary   string
 	image           string
 	imagePullSecret string
+	tlsSecret       string
 	version         Version
 	runner          Runner
 	clientID        string
 	kubeConfig      string
 	kubeContext     string
 	serviceAccount  string
+	asUser          string
 	keepPod         bool
 	namespace       string
 	labels          map[string]string
 	annotations     map[string]string
 	nodeSelector    map[string]string
+	affinity        map[string]any
+	resources       map[string]any
+	tolerations     []internal.K8sToleration
+	ctx             context.Context
 }
 
 const letterBytes = "abcdefghijklmnpqrstuvwxyz123456789"
 
 func randomString(n int) string {
-
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	b := make([]byte, n)
@@ -52,16 +58,14 @@ func randomString(n int) string {
 	return string(b)
 }
 
-func getKubectlVersion(kubectlBinary string, runner Runner) Version {
-
+func getKubectlVersion(kubectlBinary string, runner Runner) (Version, error) {
 	bytes, err := runner.ExecuteAndReturn(kubectlBinary, []string{"version", "--client", "-o", "json"})
 	if err != nil {
-		output.Fail(err)
-		return Version{}
+		return Version{}, err
 	}
 
 	if len(bytes) == 0 {
-		return Version{}
+		return Version{}, fmt.Errorf("version response empty")
 	}
 
 	type versionOutput struct {
@@ -75,60 +79,71 @@ func getKubectlVersion(kubectlBinary string, runner Runner) Version {
 	var jsonOutput versionOutput
 
 	if err := json.Unmarshal(bytes, &jsonOutput); err != nil {
-		output.Fail(fmt.Errorf("unable to extract kubectl version: %w", err))
-		return Version{}
+		return Version{}, fmt.Errorf("unable to extract kubectl version: %w", err)
 	}
 
 	major, err := strconv.Atoi(jsonOutput.ClientVersion.Major)
 	if err != nil {
-		output.Fail(err)
+		return Version{}, err
 	}
 
-	minor, err := strconv.Atoi(jsonOutput.ClientVersion.Minor)
+	minor, err := strconv.Atoi(strings.ReplaceAll(jsonOutput.ClientVersion.Minor, "+", ""))
 	if err != nil {
-		output.Fail(err)
+		return Version{}, err
 	}
 
 	return Version{
 		Major:      major,
 		Minor:      minor,
 		GitVersion: jsonOutput.ClientVersion.GitVersion,
-	}
+	}, nil
 }
 
-func newExecutor(context internal.ClientContext, runner Runner) *executor {
-	return &executor{
-		kubectlBinary:   context.Kubernetes.Binary,
-		version:         getKubectlVersion(context.Kubernetes.Binary, runner),
-		image:           context.Kubernetes.Image,
-		imagePullSecret: context.Kubernetes.ImagePullSecret,
-		clientID:        internal.GetClientID(&context, ""),
-		kubeConfig:      context.Kubernetes.KubeConfig,
-		kubeContext:     context.Kubernetes.KubeContext,
-		namespace:       context.Kubernetes.Namespace,
-		serviceAccount:  context.Kubernetes.ServiceAccount,
-		keepPod:         context.Kubernetes.KeepPod,
-		labels:          context.Kubernetes.Labels,
-		annotations:     context.Kubernetes.Annotations,
-		nodeSelector:    context.Kubernetes.NodeSelector,
-		runner:          runner,
+func newExecutor(ctx context.Context, clientContext internal.ClientContext, runner Runner) (*executor, error) {
+	version, err := getKubectlVersion(clientContext.Kubernetes.Binary, runner)
+	if err != nil {
+		return nil, err
 	}
+
+	return &executor{
+		kubectlBinary:   clientContext.Kubernetes.Binary,
+		version:         version,
+		image:           clientContext.Kubernetes.Image,
+		imagePullSecret: clientContext.Kubernetes.ImagePullSecret,
+		tlsSecret:       clientContext.Kubernetes.TLSSecret,
+		clientID:        internal.GetClientID(&clientContext, ""),
+		kubeConfig:      clientContext.Kubernetes.KubeConfig,
+		kubeContext:     clientContext.Kubernetes.KubeContext,
+		namespace:       clientContext.Kubernetes.Namespace,
+		serviceAccount:  clientContext.Kubernetes.ServiceAccount,
+		asUser:          clientContext.Kubernetes.AsUser,
+		keepPod:         clientContext.Kubernetes.KeepPod,
+		labels:          clientContext.Kubernetes.Labels,
+		annotations:     clientContext.Kubernetes.Annotations,
+		nodeSelector:    clientContext.Kubernetes.NodeSelector,
+		affinity:        clientContext.Kubernetes.Affinity,
+		resources:       clientContext.Kubernetes.Resources,
+		tolerations:     clientContext.Kubernetes.Tolerations,
+		runner:          runner,
+		ctx:             ctx,
+	}, nil
 }
 
 func (kubectl *executor) SetKubectlBinary(bin string) {
 	kubectl.kubectlBinary = bin
 }
 
-func (kubectl *executor) Run(dockerImageType, entryPoint string, kafkactlArgs []string, podEnvironment []string) error {
-
+func (kubectl *executor) Run(dockerImageType, entryPoint string, kafkactlArgs []string, podEnvironment []string, additionalKubectlArgs ...string) error {
 	dockerImage := getDockerImage(kubectl.image, dockerImageType)
 
 	podName := fmt.Sprintf("kafkactl-%s-%s", strings.ToLower(kubectl.clientID), randomString(4))
 
 	kubectlArgs := []string{
-		"run", "-i", "--tty", "--restart=Never", podName,
+		"run", "-i", "--restart=Never", podName,
 		"--image", dockerImage,
 	}
+
+	kubectlArgs = append(kubectlArgs, additionalKubectlArgs...)
 
 	if !kubectl.keepPod {
 		kubectlArgs = slices.Insert(kubectlArgs, 1, "--rm")
@@ -138,14 +153,19 @@ func (kubectl *executor) Run(dockerImageType, entryPoint string, kafkactlArgs []
 		kubectlArgs = append(kubectlArgs, "--kubeconfig", kubectl.kubeConfig)
 	}
 
-	podOverride := kubectl.createPodOverride()
-	if !podOverride.IsEmpty() {
-		podOverrideJSON, err := json.Marshal(podOverride)
+	if kubectl.asUser != "" {
+		kubectlArgs = append(kubectlArgs, "--as", kubectl.asUser)
+	}
+
+	podOverrides := kubectl.createPodOverrides()
+	if len(podOverrides) > 0 {
+		podOverridesJSON, err := json.Marshal(podOverrides)
 		if err != nil {
-			return errors.Wrap(err, "unable to create override")
+			return errors.Wrap(err, "unable to create overrides")
 		}
 
-		kubectlArgs = append(kubectlArgs, "--overrides", string(podOverrideJSON))
+		kubectlArgs = append(kubectlArgs, "--override-type", "json")
+		kubectlArgs = append(kubectlArgs, "--overrides", string(podOverridesJSON))
 	}
 
 	kubectlArgs = append(kubectlArgs, "--context", kubectl.kubeContext)
@@ -161,15 +181,30 @@ func (kubectl *executor) Run(dockerImageType, entryPoint string, kafkactlArgs []
 
 	// Keep only kafkactl arguments that are relevant in k8s context
 	allExceptConfigFileFilter := func(s string) bool {
-		return !strings.HasPrefix(s, "-C=") && !strings.HasPrefix(s, "--config-file=")
+		return !strings.HasPrefix(s, "-C=") && !strings.HasPrefix(s, "--config-file=") && !strings.HasPrefix(s, "--context=")
 	}
 	kubectlArgs = append(kubectlArgs, filter(kafkactlArgs, allExceptConfigFileFilter)...)
+	errChan := make(chan error, 1)
 
-	return kubectl.exec(kubectlArgs)
+	go func() {
+		errChan <- kubectl.exec(kubectlArgs)
+		close(errChan)
+	}()
+
+	select {
+	case <-kubectl.ctx.Done():
+		err := kubectl.exec([]string{"delete", "pod", podName, "-n", kubectl.namespace, "--wait=true"})
+		if err != nil {
+			output.Warnf("delete pod %s returned an error %w", podName, err)
+			return err
+		}
+		return context.Canceled
+	case err := <-errChan:
+		return err
+	}
 }
 
 func addTerminalSizeEnv(args []string) []string {
-
 	if !term.IsTerminal(0) {
 		output.Debugf("no terminal detected")
 		return args
@@ -187,7 +222,6 @@ func addTerminalSizeEnv(args []string) []string {
 }
 
 func getDockerImage(image string, imageType string) string {
-
 	if KafkaCtlVersion == "" {
 		KafkaCtlVersion = "latest"
 	}

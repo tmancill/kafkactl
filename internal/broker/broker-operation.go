@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v2"
 
@@ -15,8 +16,8 @@ import (
 )
 
 type Broker struct {
-	ID      int32
-	Address string
+	ID      int32             `json:",omitempty" yaml:",omitempty"`
+	Address string            `json:",omitempty" yaml:",omitempty"`
 	Configs []internal.Config `json:",omitempty" yaml:",omitempty"`
 }
 
@@ -25,14 +26,125 @@ type GetBrokersFlags struct {
 }
 
 type DescribeBrokerFlags struct {
+	AllConfigs   bool
 	OutputFormat string
 }
 
 type Operation struct {
 }
 
-func (operation *Operation) GetBrokers(flags GetBrokersFlags) error {
+type AlterBrokerFlags struct {
+	ValidateOnly bool
+	Configs      []string
+}
 
+func (operation *Operation) AlterBroker(id string, flags AlterBrokerFlags) error {
+	var (
+		err     error
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	if id == "default" {
+		id = ""
+	}
+
+	var broker *sarama.Broker
+
+	for _, aBroker := range client.Brokers() {
+		if strconv.Itoa(int(aBroker.ID())) == id {
+			broker = aBroker
+			break
+		}
+	}
+
+	if id != "" && broker == nil {
+		return errors.Errorf("cannot find broker with id: %s", id)
+	}
+
+	var existingConfigs []sarama.ConfigEntry
+	brokerConfig := sarama.ConfigResource{
+		Type: sarama.BrokerResource,
+		Name: id,
+	}
+
+	if existingConfigs, err = admin.DescribeConfig(brokerConfig); err != nil {
+		return errors.Wrap(err, "failed to describe config for broker")
+	}
+
+	mergedConfigEntries := make(map[string]*string)
+	for _, existingConfig := range existingConfigs {
+		if !existingConfig.ReadOnly && !existingConfig.Default {
+			mergedConfigEntries[existingConfig.Name] = &(existingConfig.Value)
+		}
+	}
+
+	for _, config := range flags.Configs {
+		configParts := strings.Split(config, "=")
+
+		if len(configParts) == 2 {
+			if len(configParts[1]) == 0 {
+				delete(mergedConfigEntries, configParts[0])
+			} else {
+				mergedConfigEntries[configParts[0]] = &configParts[1]
+			}
+		}
+	}
+
+	if err = admin.AlterConfig(sarama.BrokerResource, id, mergedConfigEntries, flags.ValidateOnly); err != nil {
+		return errors.Errorf("could not alter broker config '%s': %v", id, err)
+	}
+
+	if !flags.ValidateOnly {
+		output.Infof("config has been altered")
+		return nil
+	}
+
+	return operation.printConfig(mergedConfigEntries)
+}
+
+func (operation *Operation) printConfig(configs map[string]*string) error {
+
+	keys := make([]string, 0, len(configs))
+	for k := range configs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	configTableWriter := output.CreateTableWriter()
+	if err := configTableWriter.WriteHeader("CONFIG", "VALUE"); err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		if configs[key] != nil {
+			if err := configTableWriter.Write(key, *configs[key]); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := configTableWriter.Flush(); err != nil {
+		return err
+	}
+	output.PrintStrings("")
+	return nil
+}
+
+func (operation *Operation) GetBrokers(flags GetBrokersFlags) error {
 	var (
 		err     error
 		context internal.ClientContext
@@ -69,7 +181,6 @@ func (operation *Operation) GetBrokers(flags GetBrokersFlags) error {
 
 	brokerList := make([]Broker, 0, len(brokers))
 	for _, broker := range brokers {
-
 		var configs []internal.Config
 
 		brokerConfig := sarama.ConfigResource{
@@ -112,8 +223,7 @@ func (operation *Operation) GetBrokers(flags GetBrokersFlags) error {
 	return nil
 }
 
-func (operation *Operation) DescribeBroker(id int32, flags DescribeBrokerFlags) error {
-
+func (operation *Operation) DescribeBroker(id string, flags DescribeBrokerFlags) error {
 	var (
 		err     error
 		context internal.ClientContext
@@ -133,31 +243,39 @@ func (operation *Operation) DescribeBroker(id int32, flags DescribeBrokerFlags) 
 		return errors.Wrap(err, "failed to create cluster admin")
 	}
 
+	if id == "default" {
+		id = ""
+	}
+
 	var broker *sarama.Broker
 
 	for _, aBroker := range client.Brokers() {
-		if aBroker.ID() == id {
+		if strconv.Itoa(int(aBroker.ID())) == id {
 			broker = aBroker
 			break
 		}
 	}
 
-	if broker == nil {
-		return errors.Errorf("cannot find broker with id: %d", id)
+	if id != "" && broker == nil {
+		return errors.Errorf("cannot find broker with id: %s", id)
 	}
 
 	var configs []internal.Config
 
 	brokerConfig := sarama.ConfigResource{
 		Type: sarama.BrokerResource,
-		Name: fmt.Sprint(broker.ID()),
+		Name: id,
 	}
 
-	if configs, err = internal.ListConfigs(&admin, brokerConfig, false); err != nil {
+	if configs, err = internal.ListConfigs(&admin, brokerConfig, flags.AllConfigs); err != nil {
 		return err
 	}
 
-	brokerInfo := Broker{ID: broker.ID(), Address: broker.Addr(), Configs: configs}
+	brokerInfo := Broker{Configs: configs}
+	if broker != nil {
+		brokerInfo.ID = broker.ID()
+		brokerInfo.Address = broker.Addr()
+	}
 
 	if flags.OutputFormat == "json" || flags.OutputFormat == "yaml" {
 		return output.PrintObject(brokerInfo, flags.OutputFormat)
@@ -167,22 +285,24 @@ func (operation *Operation) DescribeBroker(id int32, flags DescribeBrokerFlags) 
 
 	tableWriter := output.CreateTableWriter()
 
-	// write broker info table
-	if err := tableWriter.WriteHeader("ID", "ADDRESS"); err != nil {
-		return err
+	if broker != nil {
+		// write broker info table
+		if err := tableWriter.WriteHeader("ID", "ADDRESS"); err != nil {
+			return err
+		}
+
+		if err := tableWriter.Write(fmt.Sprint(brokerInfo.ID), brokerInfo.Address); err != nil {
+			return err
+		}
+
+		if err := tableWriter.Flush(); err != nil {
+			return err
+		}
+
+		output.PrintStrings("")
 	}
 
-	if err := tableWriter.Write(fmt.Sprint(brokerInfo.ID), brokerInfo.Address); err != nil {
-		return err
-	}
-
-	if err := tableWriter.Flush(); err != nil {
-		return err
-	}
-
-	output.PrintStrings("")
-
-	// first write config table
+	// write config table
 	if err := tableWriter.WriteHeader("CONFIG", "VALUE"); err != nil {
 		return err
 	}

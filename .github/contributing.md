@@ -13,7 +13,7 @@ These tests typically run via Github Actions, but it is also easy to run them lo
 on your development machine.
 
 > :bulb: the integration tests do not clean up afterwards. To avoid interferences
-> between different tests, we have helpers that create topics/groups/... with random suffixes. See e.g. [CreateTopic()](https://github.com/deviceinsight/kafkactl/blob/main/testutil/helpers.go#L17)
+> between different tests, we have helpers that create topics/groups/... with random suffixes. See e.g. [CreateTopic()](https://github.com/deviceinsight/kafkactl/blob/main/internal/testutil/helpers.go#L20)
 
 ### Run all tests locally
 
@@ -41,7 +41,7 @@ In order to develop integration tests locally, you just have to start the kafka 
 
 ```shell
 cd docker
-docker-compose up -d
+docker compose up -d
 ```
 
 This will start 3 kafka brokers, one zookeeper, an avro schema-registry.

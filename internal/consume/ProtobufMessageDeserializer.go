@@ -1,158 +1,87 @@
 package consume
 
 import (
-	"strconv"
-	"strings"
-	"time"
-
 	"github.com/IBM/sarama"
+	"github.com/deviceinsight/kafkactl/v5/internal"
 	"github.com/deviceinsight/kafkactl/v5/internal/helpers/protobuf"
 	"github.com/deviceinsight/kafkactl/v5/internal/output"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/dynamic"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 type ProtobufMessageDeserializer struct {
-	keyDescriptor   *desc.MessageDescriptor
-	valueDescriptor *desc.MessageDescriptor
+	keyType         protoreflect.Name
+	valueType       protoreflect.Name
+	marshalOptions  internal.ProtobufMarshalOptions
+	keyDescriptor   protoreflect.MessageDescriptor
+	valueDescriptor protoreflect.MessageDescriptor
 }
 
-func CreateProtobufMessageDeserializer(context protobuf.SearchContext, keyType, valueType string) (*ProtobufMessageDeserializer, error) {
-	valueDescriptor := protobuf.ResolveMessageType(context, valueType)
-	if valueDescriptor == nil {
-		return nil, errors.Errorf("value message type %q not found in provided files", valueType)
-	}
-
-	keyDescriptor := protobuf.ResolveMessageType(context, keyType)
-	if valueDescriptor == nil && keyType != "" {
-		return nil, errors.Errorf("key message type %q not found in provided files", valueType)
-	}
-
+func CreateProtobufMessageDeserializer(config internal.ProtobufConfig, keyType, valueType protoreflect.FullName) (*ProtobufMessageDeserializer, error) {
 	return &ProtobufMessageDeserializer{
-		keyDescriptor:   keyDescriptor,
-		valueDescriptor: valueDescriptor,
+		keyType:         keyType.Name(),
+		valueType:       valueType.Name(),
+		marshalOptions:  config.MarshalOptions,
+		keyDescriptor:   protobuf.ResolveMessageType(config, keyType),
+		valueDescriptor: protobuf.ResolveMessageType(config, valueType),
 	}, nil
 }
 
-type protobufMessage struct {
-	Partition int32
-	Offset    int64
-	Headers   map[string]string `json:",omitempty" yaml:",omitempty"`
-	Key       *string           `json:",omitempty" yaml:",omitempty"`
-	Value     *string
-	Timestamp *time.Time `json:",omitempty" yaml:",omitempty"`
+func (deserializer *ProtobufMessageDeserializer) CanDeserializeKey(_ *sarama.ConsumerMessage, flags Flags) bool {
+	return flags.KeyProtoType != ""
 }
 
-func (deserializer ProtobufMessageDeserializer) newProtobufMessage(msg *sarama.ConsumerMessage, flags Flags) (protobufMessage, error) {
-	var err error
-
-	ret := protobufMessage{
-		Partition: msg.Partition,
-		Offset:    msg.Offset,
-	}
-
-	if flags.PrintTimestamps && !msg.Timestamp.IsZero() {
-		ret.Timestamp = &msg.Timestamp
-	}
-
-	if flags.PrintHeaders {
-		ret.Headers = encodeRecordHeaders(msg.Headers)
-	}
-
-	ret.Value, err = decodeProtobuf(msg.Value, deserializer.valueDescriptor, flags.EncodeValue)
-	if err != nil {
-		return protobufMessage{}, errors.Wrap(err, "value decode failed")
-	}
-
-	if flags.PrintKeys {
-		if deserializer.keyDescriptor != nil {
-			ret.Key, err = decodeProtobuf(msg.Key, deserializer.keyDescriptor, flags.EncodeKey)
-			if err != nil {
-				return protobufMessage{}, errors.Wrap(err, "key decode failed")
-			}
-		} else {
-			ret.Key = encodeBytes(msg.Key, flags.EncodeKey)
-		}
-	}
-
-	return ret, nil
+func (deserializer *ProtobufMessageDeserializer) CanDeserializeValue(_ *sarama.ConsumerMessage, flags Flags) bool {
+	return flags.ValueProtoType != ""
 }
 
-func (deserializer ProtobufMessageDeserializer) Deserialize(rawMsg *sarama.ConsumerMessage, flags Flags) error {
-	output.Debugf("start to deserialize protobuf message...")
+func (deserializer *ProtobufMessageDeserializer) DeserializeKey(consumerMsg *sarama.ConsumerMessage) (*DeserializedData, error) {
+	output.Debugf("deserialize key with ProtobufMessageDeserializer")
 
-	msg, err := deserializer.newProtobufMessage(rawMsg, flags)
-	if err != nil {
-		return err
+	if deserializer.keyDescriptor == nil {
+		return nil, errors.Errorf("key message type %q not found in provided files", deserializer.keyType)
 	}
 
-	if flags.OutputFormat != "" {
-		return output.PrintObject(msg, flags.OutputFormat)
-	}
-
-	var row []string
-
-	if flags.PrintHeaders {
-		if msg.Headers != nil {
-			column := toSortedArray(msg.Headers)
-			row = append(row, strings.Join(column[:], ","))
-		} else {
-			row = append(row, "")
-		}
-	}
-
-	if flags.PrintPartitions {
-		row = append(row, strconv.Itoa(int(msg.Partition)))
-	}
-
-	if flags.PrintKeys {
-		if msg.Key != nil {
-			row = append(row, *msg.Key)
-		} else {
-			row = append(row, "")
-		}
-	}
-	if flags.PrintTimestamps {
-		if msg.Timestamp != nil {
-			row = append(row, (*msg.Timestamp).Format(time.RFC3339))
-		} else {
-			row = append(row, "")
-		}
-	}
-
-	var value string
-
-	if msg.Value != nil {
-		value = *msg.Value
-	} else {
-		value = "null"
-	}
-
-	row = append(row, value)
-
-	output.PrintStrings(strings.Join(row[:], flags.Separator))
-	return nil
+	deserialized, err := decodeProtobuf(consumerMsg.Key, deserializer.keyDescriptor, deserializer.marshalOptions)
+	return &DeserializedData{data: deserialized}, err
 }
 
-func (deserializer ProtobufMessageDeserializer) CanDeserialize(_ string) (bool, error) {
-	return true, nil
+func (deserializer *ProtobufMessageDeserializer) DeserializeValue(consumerMsg *sarama.ConsumerMessage) (*DeserializedData, error) {
+	output.Debugf("deserialize value with ProtobufMessageDeserializer")
+	if deserializer.valueDescriptor == nil {
+		return nil, errors.Errorf("value message type %q not found in provided files", deserializer.valueType)
+	}
+	deserialized, err := decodeProtobuf(consumerMsg.Value, deserializer.valueDescriptor, deserializer.marshalOptions)
+	return &DeserializedData{data: deserialized}, err
 }
 
-func decodeProtobuf(b []byte, msgDesc *desc.MessageDescriptor, encoding string) (*string, error) {
-	if len(b) == 0 { // tombstone record, can't be unmarshalled as protobuf
+func decodeProtobuf(rawData []byte, messageDescriptor protoreflect.MessageDescriptor, marshalOptions internal.ProtobufMarshalOptions) ([]byte, error) {
+	if len(rawData) == 0 { // tombstone record, can't be unmarshalled as protobuf
 		return nil, nil
 	}
 
-	msg := dynamic.NewMessage(msgDesc)
-	if err := msg.Unmarshal(b); err != nil {
+	msg := dynamicpb.NewMessage(messageDescriptor)
+	if err := proto.Unmarshal(rawData, msg); err != nil {
 		return nil, err
 	}
 
-	j, err := msg.MarshalJSON()
+	jsonBytes, err := protojson.MarshalOptions{
+		Multiline:         false,
+		AllowPartial:      marshalOptions.AllowPartial,
+		UseProtoNames:     marshalOptions.UseProtoNames,
+		UseEnumNumbers:    marshalOptions.UseEnumNumbers,
+		EmitUnpopulated:   marshalOptions.EmitUnpopulated,
+		EmitDefaultValues: marshalOptions.EmitDefaultValues,
+		Resolver:          &ignoreUnrecognizedAny{protoregistry.GlobalTypes},
+	}.Marshal(msg)
+
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "failed to marshal protbuf message")
 	}
 
-	return encodeBytes(j, encoding), nil
+	return jsonBytes, nil
 }

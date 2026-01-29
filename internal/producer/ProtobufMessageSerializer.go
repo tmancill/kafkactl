@@ -1,21 +1,22 @@
 package producer
 
 import (
-	"github.com/IBM/sarama"
+	"github.com/deviceinsight/kafkactl/v5/internal"
 	"github.com/deviceinsight/kafkactl/v5/internal/helpers/protobuf"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/dynamic"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 type ProtobufMessageSerializer struct {
 	topic           string
-	keyDescriptor   *desc.MessageDescriptor
-	valueDescriptor *desc.MessageDescriptor
+	keyDescriptor   protoreflect.MessageDescriptor
+	valueDescriptor protoreflect.MessageDescriptor
 }
 
-func CreateProtobufMessageSerializer(topic string, context protobuf.SearchContext, keyType, valueType string) (*ProtobufMessageSerializer, error) {
+func CreateProtobufMessageSerializer(topic string, context internal.ProtobufConfig, keyType, valueType protoreflect.FullName) (*ProtobufMessageSerializer, error) {
 	valueDescriptor := protobuf.ResolveMessageType(context, valueType)
 	if valueDescriptor == nil && valueType != "" {
 		return nil, errors.Errorf("value message type %q not found in provided files", valueType)
@@ -33,49 +34,36 @@ func CreateProtobufMessageSerializer(topic string, context protobuf.SearchContex
 	}, nil
 }
 
-func (serializer ProtobufMessageSerializer) CanSerialize(string) (bool, error) {
-	return true, nil
+func (serializer ProtobufMessageSerializer) CanSerializeValue(_ string) (bool, error) {
+	return serializer.valueDescriptor != nil, nil
 }
 
-func (serializer ProtobufMessageSerializer) Serialize(key, value []byte, flags Flags) (*sarama.ProducerMessage, error) {
-	recordHeaders, err := createRecordHeaders(flags)
-	if err != nil {
-		return nil, err
-	}
-
-	message := &sarama.ProducerMessage{Topic: serializer.topic, Partition: flags.Partition, Headers: recordHeaders}
-
-	if key != nil {
-		message.Key, err = encodeProtobuf(key, serializer.keyDescriptor, flags.KeyEncoding)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	message.Value, err = encodeProtobuf(value, serializer.valueDescriptor, flags.ValueEncoding)
-	if err != nil {
-		return nil, err
-	}
-
-	return message, nil
+func (serializer ProtobufMessageSerializer) CanSerializeKey(_ string) (bool, error) {
+	return serializer.keyDescriptor != nil, nil
 }
 
-func encodeProtobuf(data []byte, messageDescriptor *desc.MessageDescriptor, encoding string) (sarama.ByteEncoder, error) {
-	data, err := decodeBytes(data, encoding)
-	if err != nil {
-		return nil, err
-	}
+func (serializer ProtobufMessageSerializer) SerializeValue(value []byte, _ Flags) ([]byte, error) {
+	return encodeProtobuf(value, serializer.valueDescriptor)
+}
 
+func (serializer ProtobufMessageSerializer) SerializeKey(key []byte, _ Flags) ([]byte, error) {
+	return encodeProtobuf(key, serializer.keyDescriptor)
+}
+
+func encodeProtobuf(data []byte, messageDescriptor protoreflect.MessageDescriptor) ([]byte, error) {
 	if messageDescriptor == nil {
 		return data, nil
 	}
 
-	message := dynamic.NewMessage(messageDescriptor)
-	if err = message.UnmarshalJSONPB(&jsonpb.Unmarshaler{AllowUnknownFields: true}, data); err != nil {
+	message := dynamicpb.NewMessage(messageDescriptor)
+
+	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
+
+	if err := unmarshaler.Unmarshal(data, message); err != nil {
 		return nil, errors.Wrap(err, "invalid json")
 	}
 
-	pb, err := message.Marshal()
+	pb, err := proto.Marshal(message)
 	if err != nil {
 		return nil, err
 	}
